@@ -1,171 +1,616 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
 
-# C extensions
-*.so
+# =============================================
+# Snippet ID: SCRP-20250209-001  # (Unique ID)
+# Author: Shahrouz Zada
+# Date: 2025-02-09
+# Description: Web scraping script for extracting financial news articles.
+# Version: 4.0
+# Notes:
+"""Enhanced Version with:
+- Proxy Support
+- Database Integration
+- Health Metrics
+- Link Deduplication (New)
+- All Previous Features
+(Fixes duplicate code blocks & unified logging config)
+"""
+# =============================================
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+import os
+import re
+import json
+import time
+import logging
+import random
+import urllib3
+import requests
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
+import threading
+from contextlib import contextmanager
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+# Database
+import psycopg2
+from psycopg2.extras import execute_batch
 
-# Translations
-*.mo
-*.pot
+# Monitoring
+from prometheus_client import start_http_server, Counter, Gauge
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# NLP
+from langdetect import detect, LangDetectException
+from nltk.stem import SnowballStemmer
 
-# Flask stuff:
-instance/
-.webassets-cache
+try:
+    import tldextract
+    USE_TLDEXTRACT = True
+except ImportError:
+    USE_TLDEXTRACT = False
 
-# Scrapy stuff:
-.scrapy
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Sphinx documentation
-docs/_build/
+###############################################################################
+# LOGGING & PROMETHEUS SETUP (UNIFIED)
+###############################################################################
 
-# PyBuilder
-.pybuilder/
-target/
+logging.basicConfig(
+    filename='scraper.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Start Prometheus metrics server
+start_http_server(8000)
+REQUESTS_TOTAL = Counter('scraper_requests_total', 'Total HTTP requests made')
+ARTICLES_SCRAPED = Counter('scraper_articles_scraped', 'Total articles scraped')
+ARTICLES_SAVED = Counter('scraper_articles_saved', 'Total articles saved to DB')
+ERRORS_TOTAL = Counter('scraper_errors', 'Total scraping errors')
 
-# IPython
-profile_default/
-ipython_config.py
+###############################################################################
+# CONFIGURATIONS
+###############################################################################
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+# Proxy Configuration (comma-separated in PROXY_POOL environment variable)
+PROXY_POOL = os.getenv('PROXY_POOL', '').split(',')
+PROXY_POOL = [p.strip() for p in PROXY_POOL if p.strip()]
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+# Database Configuration
+DATABASE_URL = os.getenv('DATABASE_URL')
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+# User Agents
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:102.0) Gecko/20100101 Firefox/102.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_3_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15"
+]
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+def get_random_agent() -> dict:
+    """Returns a headers dict with a random User-Agent from the pool."""
+    return {"User-Agent": random.choice(USER_AGENTS)}
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
+# Optional Selenium Support
+USE_SELENIUM = False
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+# Stemmer & Keyword Setup
+STEMMER_FR = SnowballStemmer("french")
+STEMMER_EN = SnowballStemmer("english")
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+KEYWORDS_FR = ["bours", "march", "économ", "infla", "taux", "matièr", "financi", "action", "obligation", "capital"]
+KEYWORDS_EN = ["stock", "market", "econom", "inflation", "rate", "commod", "financ", "share", "bond", "capital"]
 
-# SageMath parsed files
-*.sage.py
+STEMMED_KEYWORDS = {
+    'en': [STEMMER_EN.stem(kw) for kw in KEYWORDS_EN],
+    'fr': [STEMMER_FR.stem(kw) for kw in KEYWORDS_FR]
+}
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+MAX_PAGES = 3
 
-# Spyder project settings
-.spyderproject
-.spyproject
+nouvelles_sources = {
+    "France": [
+        "https://www.lemonde.fr",
+        "https://www.lefigaro.fr"
+    ],
+    "United States": [
+        "https://www.cnn.com",
+        "https://www.nytimes.com"
+    ]
+}
 
-# Rope project settings
-.ropeproject
+###############################################################################
+# DATABASE INTEGRATION
+###############################################################################
+def save_to_db(articles: list):
+    """Saves articles to PostgreSQL with conflict handling."""
+    if not DATABASE_URL:
+        logging.error("DATABASE_URL environment variable not set")
+        return
 
-# mkdocs documentation
-/site
+    try:
+        import psycopg2
+        from psycopg2.extras import execute_batch
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            # Create table if not exists
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS articles (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT,
+                    link TEXT UNIQUE,
+                    scrape_time TIMESTAMP,
+                    base_url TEXT,
+                    status_code INTEGER,
+                    response_time FLOAT,
+                    saved_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+            # Batch insert with conflict skipping
+            execute_batch(cur, """
+                INSERT INTO articles (title, link, scrape_time, base_url, status_code, response_time)
+                VALUES (%(title)s, %(link)s, %(scrape_time)s, %(base_url)s, %(status_code)s, %(response_time)s)
+                ON CONFLICT (link) DO NOTHING
+            """, articles)
 
-# Pyre type checker
-.pyre/
+            conn.commit()
+            ARTICLES_SAVED.inc(len(articles))
 
-# pytype static type analyzer
-.pytype/
+    except Exception as e:
+        logging.error(f"Database error: {str(e)}")
+        ERRORS_TOTAL.inc()
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
-# Cython debug symbols
-cython_debug/
+###############################################################################
+# ROBOTS.TXT & RATE-LIMITING
+###############################################################################
+from urllib.robotparser import RobotFileParser
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+ROBOTS_CACHE = {}
+DOMAIN_CRAWL_DELAYS = {}
+DOMAIN_NEXT_ALLOWED = {}
+DOMAIN_LOCKS = defaultdict(threading.Lock)
 
-# PyPI configuration file
-.pypirc
+def get_domain(url: str) -> str:
+    """Parse the domain from a URL."""
+    if USE_TLDEXTRACT:
+        extracted = tldextract.extract(url)
+        return f"{extracted.domain}.{extracted.suffix}".lower()
+    else:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.netloc.lower()
+
+def parse_robots_and_delay(domain: str, user_agent: str, default_delay: float = 10.0):
+    """Fetch and parse robots.txt for domain, store allow & crawl-delay."""
+    rp = RobotFileParser()
+    robots_url = f"https://{domain}/robots.txt"
+    logging.info(f"Fetching robots.txt for {domain} -> {robots_url}")
+    try:
+        resp = requests.get(robots_url, headers={"User-Agent": user_agent}, timeout=15, verify=False)
+        if resp.status_code == 200:
+            rp.parse(resp.text.splitlines())
+            allowed = rp.can_fetch(user_agent, f"https://{domain}")
+            delay = rp.crawl_delay(user_agent)
+            if delay is None:
+                delay = default_delay
+        else:
+            logging.warning(f"robots.txt for {domain} returned {resp.status_code}; restricted.")
+            allowed = False
+            delay = default_delay
+    except Exception as e:
+        logging.warning(f"Failed to parse robots.txt for {domain}: {e}")
+        allowed = False
+        delay = default_delay
+
+    ROBOTS_CACHE[domain] = allowed
+    DOMAIN_CRAWL_DELAYS[domain] = float(delay)
+
+def can_scrape(url: str) -> bool:
+    """Check if domain is allowed by robots.txt, parse if not cached."""
+    domain = get_domain(url)
+    if domain in ROBOTS_CACHE:
+        return ROBOTS_CACHE[domain]
+
+    user_agent = random.choice(USER_AGENTS)
+    parse_robots_and_delay(domain, user_agent=user_agent)
+    return ROBOTS_CACHE[domain]
+
+def get_crawl_delay(url: str, default_delay: float = 10.0) -> float:
+    domain = get_domain(url)
+    if domain not in DOMAIN_CRAWL_DELAYS:
+        user_agent = random.choice(USER_AGENTS)
+        parse_robots_and_delay(domain, user_agent=user_agent, default_delay=default_delay)
+    return DOMAIN_CRAWL_DELAYS.get(domain, default_delay)
+
+def wait_for_domain_delay(url: str):
+    """Enforce domain-based crawl-delay using locks to handle concurrency."""
+    domain = get_domain(url)
+    with DOMAIN_LOCKS[domain]:
+        now = time.time()
+        next_allowed = DOMAIN_NEXT_ALLOWED.get(domain, 0)
+        if now < next_allowed:
+            sleep_time = next_allowed - now
+            logging.info(f"Sleeping {sleep_time:.2f}s for domain {domain} to respect crawl-delay.")
+            time.sleep(sleep_time)
+        cdelay = get_crawl_delay(url)
+        DOMAIN_NEXT_ALLOWED[domain] = time.time() + cdelay
+
+###############################################################################
+# PROXY SUPPORT
+###############################################################################
+class ProxyManager:
+    def __init__(self):
+        self.all_proxies = PROXY_POOL.copy()
+        self.alive_proxies = []
+        self.dead_proxies = {}
+        self.lock = threading.Lock()
+        self._initial_health_check()
+
+        # Start background recheck thread
+        self.health_thread = threading.Thread(target=self._background_health_check, daemon=True)
+        self.health_thread.start()
+
+    def _initial_health_check(self):
+        """Validate all proxies at startup."""
+        def is_alive(proxy):
+            test_url = "https://www.google.com"
+            try:
+                start = time.time()
+                r = requests.get(test_url, proxies={'https': proxy}, timeout=10, verify=False)
+                latency = time.time() - start
+                logging.info(f"Proxy {proxy} checked (latency: {latency:.2f}s)")
+                return r.status_code == 200 and latency < 2.0
+            except:
+                return False
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(is_alive, self.all_proxies))
+
+        with self.lock:
+            for p, ok in zip(self.all_proxies, results):
+                if ok:
+                    self.alive_proxies.append(p)
+                else:
+                    self.dead_proxies[p] = datetime.now()
+
+    def _background_health_check(self):
+        """Periodically re-check dead proxies to see if they're revived."""
+        cooldown = timedelta(minutes=5)
+        while True:
+            time.sleep(60)  # check every minute
+            with self.lock:
+                to_recheck = [p for p, t in self.dead_proxies.items() if datetime.now() - t > cooldown]
+            if not to_recheck:
+                continue
+
+            def is_alive(proxy):
+                try:
+                    test_url = "https://www.google.com"
+                    start = time.time()
+                    r = requests.get(test_url, proxies={'https': proxy}, timeout=10, verify=False)
+                    latency = time.time() - start
+                    return r.status_code == 200 and latency < 2.0
+                except:
+                    return False
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                results = list(executor.map(is_alive, to_recheck))
+
+            with self.lock:
+                for p, ok in zip(to_recheck, results):
+                    if ok:
+                        self.alive_proxies.append(p)
+                        del self.dead_proxies[p]
+
+    def get_proxy(self) -> str:
+        """Round-robin pick from alive_proxies."""
+        with self.lock:
+            if not self.alive_proxies:
+                return None
+            p = self.alive_proxies.pop(0)
+            self.alive_proxies.append(p)
+            return p
+
+    def mark_dead(self, proxy: str):
+        """Remove from alive list, add to dead list."""
+        with self.lock:
+            if proxy in self.alive_proxies:
+                self.alive_proxies.remove(proxy)
+            self.dead_proxies[proxy] = datetime.now()
+
+proxy_manager = ProxyManager()
+
+def safe_get_proxied(url: str, max_retries: int = 3):
+    """Respects domain-based crawl-delay, uses ProxyManager for rotating proxies."""
+    for attempt in range(max_retries):
+        proxy = None
+        try:
+            proxy = proxy_manager.get_proxy()
+            wait_for_domain_delay(url)
+            headers = get_random_agent()
+
+            logging.info(f"Attempt {attempt+1} for {url} via proxy: {proxy}")
+            resp = requests.get(url, headers=headers, proxies={'https': proxy} if proxy else None,
+                                timeout=15, verify=False)
+            resp.raise_for_status()
+
+            REQUESTS_TOTAL.inc()
+            return resp
+
+        except requests.exceptions.RequestException as e:
+            ERRORS_TOTAL.inc()
+            if proxy:
+                proxy_manager.mark_dead(proxy)
+                logging.warning(f"Marked proxy {proxy} as dead; error: {e}")
+
+            if attempt < max_retries - 1:
+                backoff = 2 ** attempt + random.uniform(0, 1)
+                logging.info(f"Retrying {url} in {backoff:.1f}s...")
+                time.sleep(backoff)
+
+    raise Exception(f"All {max_retries} attempts failed for {url}")
+
+###############################################################################
+# SELENIUM RESOURCE MANAGEMENT
+###############################################################################
+from threading import Semaphore
+
+SELENIUM_SEMAPHORE = Semaphore(3)
+DRIVER_POOL = ThreadPoolExecutor(max_workers=3)
+
+@contextmanager
+def get_driver(chrome_options):
+    """Thread-safe driver acquisition from pool."""
+    from selenium.webdriver import Chrome
+    driver = Chrome(options=chrome_options)
+    try:
+        yield driver
+    finally:
+        driver.quit()
+
+def dynamic_scrape(url: str) -> str:
+    """Selenium scraping with concurrency control."""
+    from selenium.webdriver.chrome.options import Options
+
+    with SELENIUM_SEMAPHORE:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--disable-gpu")
+
+        future = DRIVER_POOL.submit(lambda: _fetch_with_driver(chrome_options, url))
+        return future.result()
+
+def _fetch_with_driver(chrome_options, url):
+    with get_driver(chrome_options) as driver:
+        wait_for_domain_delay(url)
+        driver.get(url)
+        return driver.page_source
+
+###############################################################################
+# PAGINATION & SCRAPING
+###############################################################################
+def find_next_page(soup: BeautifulSoup, base_url: str) -> str:
+    possible_selectors = ["next", "suivant", ">", "prochain"]
+    for link in soup.find_all("a", href=True):
+        text = link.get_text(strip=True).lower()
+        if any(sel in text for sel in possible_selectors):
+            href = link["href"]
+            if not href.startswith("http"):
+                href = requests.compat.urljoin(base_url, href)
+            return href
+    return None
+
+def scrape_site(url: str) -> list:
+    """
+    Scrapes a single site with up to MAX_PAGES, respects domain delay, concurrency.
+    Now includes link deduplication across pagination.
+    """
+    all_articles = []
+    seen_links = set()  # track deduplicated links across pages
+    current_url = url
+    pages_scraped = 0
+
+    while current_url and pages_scraped < MAX_PAGES:
+        start_time = time.time()
+        try:
+            logging.info(f"Scraping {current_url} (page {pages_scraped+1} of {MAX_PAGES})")
+
+            if USE_SELENIUM:
+                # Render via Selenium
+                page_source = dynamic_scrape(current_url)
+                status_code = 200
+            else:
+                # Use proxied safe_get
+                resp = safe_get_proxied(current_url)
+                page_source = resp.text
+                status_code = resp.status_code
+
+            resp_time = round(time.time() - start_time, 2)
+
+            soup = BeautifulSoup(page_source, "html.parser")
+            logging.info(f"Page {pages_scraped+1} [Status: {status_code}, Response: {resp_time}s]")
+
+            new_articles = extract_articles(
+                soup,
+                current_url,
+                status_code,
+                resp_time,
+                seen_links=seen_links  # pass dedup set
+            )
+            all_articles.extend(new_articles)
+
+            next_link = find_next_page(soup, current_url)
+            current_url = next_link
+            pages_scraped += 1
+
+        except Exception as e:
+            logging.error(f"Error scraping {current_url}: {e}")
+            break
+
+    return all_articles
+
+def extract_articles(soup: BeautifulSoup, base_url: str, status_code: int, resp_time: float, seen_links: set = None):
+    """
+    Extracts articles from a page, returning a list of dictionaries.
+    Deduplicates links using a seen_links set if provided.
+    """
+    if seen_links is None:
+        seen_links = set()
+
+    articles = []
+    pattern = re.compile(r'/news/|/article/|/20\d{2}/')
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        title = link.get_text(strip=True)
+        if not href.startswith("http"):
+            href = requests.compat.urljoin(base_url, href)
+
+        # Only consider if matches pattern AND not in seen_links
+        if pattern.search(href) and href not in seen_links:
+            seen_links.add(href)
+            articles.append({
+                "title": title,
+                "link": href,
+                "scrape_time": datetime.now().isoformat(),
+                "base_url": base_url,
+                "status_code": status_code,
+                "response_time": resp_time
+            })
+    return articles
+
+###############################################################################
+# CONCURRENT EXECUTION
+###############################################################################
+def scrape_all_sites(sites: dict, output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        for country, urls in sites.items():
+            country_dir = os.path.join(output_dir, country.replace(" ", "_"))
+            os.makedirs(country_dir, exist_ok=True)
+
+            for url in urls:
+                if not can_scrape(url):
+                    logging.warning(f"Skipping restricted site: {url}")
+                    continue
+                futures.append(executor.submit(scrape_and_save, url, country_dir))
+
+        for future in as_completed(futures):
+            pass
+
+def scrape_and_save(url: str, country_dir: str):
+    """Scrapes URL, stores articles to DB, logs results."""
+    try:
+        articles = scrape_site(url)
+        if articles:
+            ARTICLES_SCRAPED.inc(len(articles))
+            save_to_db(articles)
+            logging.info(f"Saved {len(articles)} articles from {url} to DB")
+        else:
+            logging.info(f"No articles found for {url}")
+    except Exception as e:
+        logging.error(f"Scrape failed for {url}: {str(e)}")
+        ERRORS_TOTAL.inc()
+
+###############################################################################
+# LANGUAGE DETECTION & FILTERING
+###############################################################################
+def detect_language(text: str, fallback_lang: str = 'en') -> str:
+    """Attempt to detect language; fallback if fails or unrecognized."""
+    try:
+        lang = detect(text)
+        if lang.startswith('en'):
+            return 'en'
+        elif lang.startswith('fr'):
+            return 'fr'
+    except LangDetectException:
+        pass
+    return fallback_lang
+
+def filter_article(article: dict, fallback_lang: str = 'en') -> bool:
+    """Filter based on pre-stemmed financial keywords, logs matched tokens at DEBUG."""
+    title = article.get("title", "") or ""
+    lang = detect_language(title, fallback_lang=fallback_lang)
+    tokens = re.findall(r'\b\w+\b', title.lower())
+
+    if lang not in STEMMED_KEYWORDS:
+        lang = 'en'  # default
+
+    if lang == 'en':
+        stemmed_tokens = [STEMMER_EN.stem(t) for t in tokens]
+    else:
+        stemmed_tokens = [STEMMER_FR.stem(t) for t in tokens]
+
+    relevant_keywords = STEMMED_KEYWORDS[lang]
+
+    matches = [k for k in relevant_keywords if k in stemmed_tokens]
+    if matches:
+        logging.debug(f"Matched keywords {matches} in title: {title}")
+        return True
+    return False
+
+def filter_all_articles(input_dir: str, output_dir: str):
+    """Loads raw scraped articles from JSON, filters them, saves to new directory."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    for country in os.listdir(input_dir):
+        country_path = os.path.join(input_dir, country)
+        if not os.path.isdir(country_path):
+            continue
+
+        country_output_path = os.path.join(output_dir, country)
+        os.makedirs(country_output_path, exist_ok=True)
+
+        fallback_lang = 'fr' if country.lower().startswith('france') else 'en'
+
+        for source_folder in os.listdir(country_path):
+            source_path = os.path.join(country_path, source_folder)
+            if not os.path.isdir(source_path):
+                continue
+
+            source_output_path = os.path.join(country_output_path, source_folder)
+            os.makedirs(source_output_path, exist_ok=True)
+
+            for filename in os.listdir(source_path):
+                if filename.endswith('.json'):
+                    file_path = os.path.join(source_path, filename)
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            articles = json.load(f)
+                            if not isinstance(articles, list):
+                                logging.warning(f"{file_path} is not a valid list.")
+                                continue
+                            filtered = [a for a in articles if filter_article(a, fallback_lang)]
+                            if filtered:
+                                out_file = os.path.join(source_output_path, filename)
+                                with open(out_file, "w", encoding="utf-8") as out_f:
+                                    json.dump(filtered, out_f, indent=4, ensure_ascii=False)
+                                logging.info(f"Saved {len(filtered)} filtered articles to {out_file}")
+                            else:
+                                logging.info(f"No financial articles in {file_path}")
+                    except Exception as e:
+                        logging.error(f"Error filtering {file_path}: {e}")
+
+###############################################################################
+# MAIN
+###############################################################################
+if __name__ == "__main__":
+    if not DATABASE_URL:
+        logging.critical("DATABASE_URL environment variable required!")
+        exit(1)
+
+    # Still creates local JSON files in 'news_data' for fallback,
+    # but DB is the main store of final data
+    scrape_all_sites(nouvelles_sources, "news_data")
+    filter_all_articles("news_data", "filtered_data")
+
+    logging.info("Scraping completed, metrics at :8000/metrics")
