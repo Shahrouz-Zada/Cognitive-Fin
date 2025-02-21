@@ -49,8 +49,7 @@ This project is a **financial news scraping and sentiment analysis tool** that:
 
 🖼 **Architecture Diagram:**  
 
-  
-<img src="https://github.com/Shahrouz-Zada/Cognitive-Fin/issues/2#issue-2869641734" alt="High-Level view of the data flow" width="500"/>
+<img src="https://github.com/Sh-Z/Cognitive-Fin/issues/2#issue-1734" alt="High Level view of the data flow" width="500"/>
 ---
 
 ## **📌 Prerequisites**  
