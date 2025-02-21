@@ -27,6 +27,7 @@ This project is a **financial news scraping and sentiment analysis tool** that:
 ✔️ **PostgreSQL Storage** – Stores structured news articles with duplicate prevention.  
 ✔️ **Real-time Monitoring** – Prometheus metrics track scraping performance.  
 
+![Image](https://github.com/user-attachments/assets/349f9c02-fdd6-4af7-b8a7-26baf0388922)
 ---
 
 ## **📌 Architecture**  
