@@ -48,8 +48,9 @@ This project is a **financial news scraping and sentiment analysis tool** that:
    🔹 Matches **financial keywords** in English, French, etc.  
 
 🖼 **Architecture Diagram:**  
-![Architecture Diagram](https://example.com/architecture.png)  
 
+  
+<img src="https://github.com/Shahrouz-Zada/Cognitive-Fin/issues/2#issue-2869641734" alt="High-Level view of the data flow" width="500"/>
 ---
 
 ## **📌 Prerequisites**  
